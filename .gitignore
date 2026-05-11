@@ -16,3 +16,16 @@ cp/
 outputs/
 /saved_data
 /visualize
+
+# Logs and checkpoints
+log/
+*.ckpt
+
+# Virtual environment
+.venv/
+
+# Misc
+webui/
+reference_article/
+thesis/
+__pycache__/

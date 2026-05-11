@@ -1,7 +1,7 @@
 dataset_name: 'FACED'
-data_dir: '/mnt/dataset0/xinke/nsy/Faced_blink_only'
+data_dir: '/root/autodl-tmp/data/FACED'
 fs: 125
-n_channs: 30
+n_channs: 32
 n_session: 1  
 n_subs: 123
 n_vids: 28

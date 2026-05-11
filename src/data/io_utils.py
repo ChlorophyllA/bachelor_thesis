@@ -2,6 +2,7 @@ import os
 import numpy as np
 import scipy.io as sio
 import re
+import pickle
 
 def get_load_data_func(dataset_name):
     if dataset_name == 'SEEDV':
@@ -64,18 +65,38 @@ def load_processed_FACED_NEW_data(dir, fs, n_chans, timeLen,timeStep,n_session=1
 
     for idx,fn in enumerate(list_files):
         file_path = os.path.join(dir,fn)
-        onesubsession_data = sio.loadmat(file_path)
+        with open(file_path, 'rb') as f:
+            onesubsession_data = pickle.load(f)
+        print(type(onesubsession_data))
+        # 如果是dict，看看里面有什么key
+        if isinstance(onesubsession_data, dict):
+            print(onesubsession_data.keys())
+        # 如果是numpy array或list，看看shape
+        elif hasattr(onesubsession_data, "shape"):
+            print(onesubsession_data.shape)
+        else:
+            print(onesubsession_data)
+
         
-        EEG_data = onesubsession_data['data_all_cleaned']
-        thr = 30 * np.median(np.abs(EEG_data))
-        EEG_data = (EEG_data - np.mean(EEG_data[np.abs(EEG_data)<thr])) / np.std(EEG_data[np.abs(EEG_data)<thr])
-        n_points = onesubsession_data['n_samples_one'][0]*fs
-        n_points_cum = np.cumsum(n_points).astype(int)
-        start_points = n_points_cum-t*fs
+        EEG_data = onesubsession_data
+        # EEG_data = onesubsession_data['data_all_cleaned']
+        # thr = 30 * np.median(np.abs(EEG_data))
+        # EEG_data = (EEG_data - np.mean(EEG_data[np.abs(EEG_data)<thr])) / np.std(EEG_data[np.abs(EEG_data)<thr])
+        for v in range(EEG_data.shape[0]):
+            x = EEG_data[v]
+            thr = 30 * np.median(np.abs(x))
+            EEG_data[v] = (x - np.mean(x[np.abs(x) < thr])) / np.std(x[np.abs(x) < thr])
+        # n_points = onesubsession_data['n_samples_one'][0]*fs
+        # n_points_cum = np.cumsum(n_points).astype(int)
+        # start_points = n_points_cum-t*fs
         
         for k, vid in enumerate(vid_sel):
             for i in range(n_samples):
-                data[idx,k*n_samples+i] = EEG_data[:,start_points[vid]+i*points_step:start_points[vid]+i*points_step+points_len]        
+                data[idx, k*n_samples+i] = EEG_data[vid, :,
+                    i*points_step : i*points_step + points_len
+                ]        
+        
+        
     
     data = data.reshape(-1,data.shape[-2],data.shape[-1])
     # (subs*slices*vids)*channals*time
@@ -224,55 +245,125 @@ def load_processed_SEEDV_NEW_data(dir, fs, n_chans, timeLen, timeStep, n_session
     return data, np.array(onesub_labels), n_samples_onesub, n_samples_sessions
 
 def load_processed_SEEDIV_NEW_data(dir, fs, n_chans, timeLen, timeStep, n_session=3, 
-                                  n_subs=13, n_vids = 24, n_class=4):
-    # input data shape(onesub_onesession):(channels,tot_time) tot_time = sum(eachvids_n_points) 
-    # *input data shape（onesub_3session):(channels,tot_time)
-    # output : (subs*sum(n_samples_onesub))*channals*time
-    #           (16*(sum(n_samples_onesub)))*62*point_len(1250)
+                                  n_subs=13, n_vids=24, n_class=4):
+    import os, re, numpy as np, scipy.io as sio
     
-
     list_files = os.listdir(dir)
     list_files = sorted(list_files, key=lambda x: int(re.search(r'\d+', x).group()))
     assert len(list_files) == n_subs
-    points_len = int(timeLen*fs)
-    points_step = int(timeStep*fs)
     
-    # 3 session in all change delete the loop
-    file_path = os.path.join(dir,list_files[0])
-    onesub_data = sio.loadmat(file_path)  
-    n_time = np.squeeze(onesub_data['merged_n_samples_one']).astype(int)
-    n_points = np.array(n_time) * fs
-    n_samples_onesub = ((n_points-points_len)//points_step+1).astype(int)
+    points_len = int(timeLen * fs)
+    points_step = int(timeStep * fs)
+    
+    # 读取第一个文件，判断 merged_n_samples_one 是秒数还是点数
+    sample_file = os.path.join(dir, list_files[0])
+    sample_data = sio.loadmat(sample_file)
+    n_time_raw = np.squeeze(sample_data['merged_n_samples_one']).astype(float)
+    
+    # 判断：如果数值很大（>10000）则认为是点数（原始采样点），否则是秒数
+    if np.max(n_time_raw) > 10000:
+        n_points = n_time_raw.astype(int)          # 直接作为点数
+        print("检测到 merged_n_samples_one 为点数，直接使用")
+    else:
+        n_points = (n_time_raw * fs).astype(int)   # 秒数 * 采样率 = 点数
+        print("检测到 merged_n_samples_one 为秒数，乘以采样率后使用")
+    
+    # 计算每个视频的滑动窗口个数
+    n_samples_onesub = ((n_points - points_len) // points_step + 1).astype(int)
+    # 防止负数（如果视频时长小于窗口长度，则窗口数为0）
+    n_samples_onesub = np.maximum(n_samples_onesub, 0)
     n_samples_sum_onesub = np.sum(n_samples_onesub)
     
-    data = np.empty((n_subs*n_samples_sum_onesub,n_chans,points_len),float)
-
+    if n_samples_sum_onesub <= 0:
+        raise ValueError(f"总样本数为 {n_samples_sum_onesub}，请检查 timeLen={timeLen}, fs={fs}, 或数据文件中的时长信息")
+    
+    # 预分配数据数组
+    data = np.empty((n_subs * n_samples_sum_onesub, n_chans, points_len), dtype=np.float32)
+    
     cnt = 0
-    for idx,fn in enumerate(list_files):
-        file_path = os.path.join(dir,fn)
-        # print(fn)
-        onesub_data = sio.loadmat(file_path)     #keys: data,n_points
-        EEG_data = onesub_data['merged_data_all_cleaned']   #(channels,tot_n_points_3session)  (60,tot_n_points_3session)
-        thr = 30 * np.median(np.abs(EEG_data))
-        EEG_data = (EEG_data - np.mean(EEG_data[np.abs(EEG_data)<thr])) / np.std(EEG_data[np.abs(EEG_data)<thr])
-        n_points_cum = np.concatenate((np.array([0]),np.cumsum(n_points)))
-
+    for idx, fn in enumerate(list_files):
+        file_path = os.path.join(dir, fn)
+        onesub_data = sio.loadmat(file_path)
+        EEG_data = onesub_data['merged_data_all_cleaned']   # (channels, total_points)
         
-        n_vids_all = n_vids*n_session
+        # 标准化（与论文一致）
+        thr = 30 * np.median(np.abs(EEG_data))
+        EEG_data = (EEG_data - np.mean(EEG_data[np.abs(EEG_data) < thr])) / np.std(EEG_data[np.abs(EEG_data) < thr])
+        
+        # 计算累积采样点索引
+        n_points_cum = np.concatenate(([0], np.cumsum(n_points)))
+        
+        n_vids_all = n_vids * n_session
         for vid in range(n_vids_all):
-            # print('vid:',vid)
             for i in range(n_samples_onesub[vid]):
-                # print('sample:',i)
-                data[cnt] = EEG_data[:,n_points_cum[vid]+i*points_step:n_points_cum[vid]+i*points_step+points_len]
-                cnt+=1
+                start = n_points_cum[vid] + i * points_step
+                end = start + points_len
+                data[cnt] = EEG_data[:, start:end]
+                cnt += 1
     
     n_samples_onesub = np.array(n_samples_onesub)
-    n_samples_sessions = n_samples_onesub.reshape(n_session,-1)
-    label = [1,2,3,0,2,0,0,1,0,1,2,1,1,1,2,3,2,2,3,3,0,3,0,3] + [2,1,3,0,0,2,0,2,3,3,2,3,2,0,1,1,2,1,0,3,0,1,3,1] + [1,2,2,1,3,3,3,1,1,2,1,0,2,3,3,0,2,3,0,0,2,0,1,0]
+    n_samples_sessions = n_samples_onesub.reshape(n_session, -1)
+    
+    # 标签（三个session，每个24个视频）
+    label = [1,2,3,0,2,0,0,1,0,1,2,1,1,1,2,3,2,2,3,3,0,3,0,3] + \
+            [2,1,3,0,0,2,0,2,3,3,2,3,2,0,1,1,2,1,0,3,0,1,3,1] + \
+            [1,2,2,1,3,3,3,1,1,2,1,0,2,3,3,0,2,3,0,0,2,0,1,0]
     onesub_labels = []
     for i in range(len(label)):
-        onesub_labels = onesub_labels + [label[i]]*n_samples_onesub[i]   
+        onesub_labels.extend([label[i]] * n_samples_onesub[i])
+    
     return data, np.array(onesub_labels), n_samples_onesub, n_samples_sessions
+
+# def load_processed_SEEDIV_NEW_data(dir, fs, n_chans, timeLen, timeStep, n_session=3, 
+#                                   n_subs=13, n_vids = 24, n_class=4):
+#     # input data shape(onesub_onesession):(channels,tot_time) tot_time = sum(eachvids_n_points) 
+#     # *input data shape（onesub_3session):(channels,tot_time)
+#     # output : (subs*sum(n_samples_onesub))*channals*time
+#     #           (16*(sum(n_samples_onesub)))*62*point_len(1250)
+    
+
+#     list_files = os.listdir(dir)
+#     list_files = sorted(list_files, key=lambda x: int(re.search(r'\d+', x).group()))
+#     assert len(list_files) == n_subs
+#     points_len = int(timeLen*fs)
+#     points_step = int(timeStep*fs)
+    
+#     # 3 session in all change delete the loop
+#     file_path = os.path.join(dir,list_files[0])
+#     onesub_data = sio.loadmat(file_path)  
+#     n_time = np.squeeze(onesub_data['merged_n_samples_one']).astype(int)
+#     n_points = np.array(n_time) * fs
+#     n_samples_onesub = ((n_points-points_len)//points_step+1).astype(int)
+#     n_samples_sum_onesub = np.sum(n_samples_onesub)
+    
+#     data = np.empty((n_subs*n_samples_sum_onesub,n_chans,points_len),float)
+
+#     cnt = 0
+#     for idx,fn in enumerate(list_files):
+#         file_path = os.path.join(dir,fn)
+#         # print(fn)
+#         onesub_data = sio.loadmat(file_path)     #keys: data,n_points
+#         EEG_data = onesub_data['merged_data_all_cleaned']   #(channels,tot_n_points_3session)  (60,tot_n_points_3session)
+#         thr = 30 * np.median(np.abs(EEG_data))
+#         EEG_data = (EEG_data - np.mean(EEG_data[np.abs(EEG_data)<thr])) / np.std(EEG_data[np.abs(EEG_data)<thr])
+#         n_points_cum = np.concatenate((np.array([0]),np.cumsum(n_points)))
+
+        
+#         n_vids_all = n_vids*n_session
+#         for vid in range(n_vids_all):
+#             # print('vid:',vid)
+#             for i in range(n_samples_onesub[vid]):
+#                 # print('sample:',i)
+#                 data[cnt] = EEG_data[:,n_points_cum[vid]+i*points_step:n_points_cum[vid]+i*points_step+points_len]
+#                 cnt+=1
+    
+#     n_samples_onesub = np.array(n_samples_onesub)
+#     n_samples_sessions = n_samples_onesub.reshape(n_session,-1)
+#     label = [1,2,3,0,2,0,0,1,0,1,2,1,1,1,2,3,2,2,3,3,0,3,0,3] + [2,1,3,0,0,2,0,2,3,3,2,3,2,0,1,1,2,1,0,3,0,1,3,1] + [1,2,2,1,3,3,3,1,1,2,1,0,2,3,3,0,2,3,0,0,2,0,1,0]
+#     onesub_labels = []
+#     for i in range(len(label)):
+#         onesub_labels = onesub_labels + [label[i]]*n_samples_onesub[i]   
+#     return data, np.array(onesub_labels), n_samples_onesub, n_samples_sessions
 
 def load_processed_SEED_NEW_data(dir, fs, n_chans, timeLen, timeStep, n_session=3, 
                                   n_subs=15, n_vids = 15, n_class=3):

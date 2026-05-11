@@ -1,6 +1,7 @@
 import hydra
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import json
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["WORLD_SIZE"] = "1"
 from omegaconf import DictConfig
 from src.model.valMLP import simpleNN3, MLPModel
@@ -11,8 +12,10 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 import torch
 import logging
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
+from src.visualization import plot_confusion_matrix, plot_roc_curves, plot_subject_heatmap
 
 torch.set_float32_matmul_precision('high')  # optional performance tweak
 
@@ -84,7 +87,7 @@ def train_mlp(cfg: DictConfig) -> None:
             callbacks=[checkpoint_callback],
             max_epochs=cfg.val.mlp.max_epochs,
             min_epochs=cfg.val.mlp.min_epochs,
-            accelerator='gpu', devices=1,
+            accelerator='auto', devices=1,
             limit_val_batches=1.0
         )
 
@@ -140,7 +143,16 @@ def train_mlp(cfg: DictConfig) -> None:
         aurocs.append(auroc)
         auprcs.append(auprc)
 
-        # print fold results
+        # Visualize: confusion matrix + ROC for this fold
+        viz_dir = os.path.join(cp_dir, 'viz')
+        os.makedirs(viz_dir, exist_ok=True)
+        fig_cm = plot_confusion_matrix(y_true, y_pred, title=f'Confusion Matrix Fold {fold}')
+        fig_cm.savefig(os.path.join(viz_dir, f'cm_fold{fold}.png'), dpi=150)
+        plt.close(fig_cm)
+        fig_roc = plot_roc_curves(y_true, y_prob, title=f'ROC Fold {fold}')
+        fig_roc.savefig(os.path.join(viz_dir, f'roc_fold{fold}.png'), dpi=150)
+        plt.close(fig_roc)
+
         print(f"Fold {fold} results:")
         print(f"  Acc   = {acc:.2f}")
         print(f"  Prec  = {precision:.2f}")
@@ -166,6 +178,28 @@ def train_mlp(cfg: DictConfig) -> None:
         print(f"{name}: {mean*100:.2f} ± {std*100:.2f}")
         latex = latex + f"{mean*100:.2f} ± {std*100:.2f} & "
     print(latex)
+
+    # Save results JSON
+    results_path = os.path.join('log', cfg.log.run_name, 'mlp_results.json')
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    summary = {k: {'mean': float(np.mean(v)), 'std': float(np.std(v)), 'values': [float(x) for x in v]}
+               for k, v in metrics.items()}
+    with open(results_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f'Results saved to {results_path}')
+
+    # Per-subject heatmap (approximate: acc per fold)
+    n_subs = cfg.data_val.n_subs
+    acc_matrix = np.zeros((n_subs, n_folds))
+    for fold in range(n_folds):
+        val_subs = val_subs_all[fold]
+        acc_matrix[val_subs, fold] = accs[fold]
+    viz_dir = os.path.join(cfg.log.mlp_cp_dir, cfg.log.run_name, 'viz')
+    os.makedirs(viz_dir, exist_ok=True)
+    fig_hm = plot_subject_heatmap(acc_matrix, title=f'{cfg.log.run_name} Per-Subject Accuracy')
+    fig_hm.savefig(os.path.join(viz_dir, 'subject_heatmap.png'), dpi=150)
+    plt.close(fig_hm)
+    print(f'Heatmap saved to {viz_dir}/subject_heatmap.png')
 
 if __name__ == '__main__':
     train_mlp()

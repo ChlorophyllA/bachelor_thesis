@@ -10,12 +10,15 @@ import pytorch_lightning as pl
 # from pytorch_lightning.loggers import WandbLogger
 # import wandb
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
+from pytorch_lightning.loggers import TensorBoardLogger
 from src.data.multi_dataloader import MultiDataModule
 from src.model.MultiModel_PL import MultiModel_PL
+from src.callbacks import TSNECallback, AdjacencyCallback, GradientNormCallback, WeightHistogramCallback
+from src.utils import *
 import logging
 from omegaconf import OmegaConf
-from pytorch_lightning.loggers import TensorBoardLogger
-from src.utils import *
+
+log = logging.getLogger(__name__)
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ def run_pipeline(cfg: DictConfig):
         logger_save_dir = os.path.join(save_dir, str(fold))
         if not os.path.exists(logger_save_dir):
             os.makedirs(logger_save_dir)
-            logger = TensorBoardLogger(save_dir=logger_save_dir, name=run_name)
+        logger = TensorBoardLogger(save_dir=logger_save_dir, name=run_name)
         cfg.data_cfg_list = [cfg.data_0, cfg.data_1, cfg.data_2, cfg.data_3, cfg.data_4]
         cfg.data_cfg_list = [cfg_i for cfg_i in cfg.data_cfg_list if cfg_i.dataset_name != 'None']
         print(f'Using {len(cfg.data_cfg_list)} datasets to pretrain')
@@ -58,11 +61,19 @@ def run_pipeline(cfg: DictConfig):
                                             save_top_k=-1)
         # if all subs are used to pretrain, no will be used in validation.
         limit_val_batches = 0.0 if n_folds == 1 else 1.0
+        # Visualization callbacks
+        vis_callbacks = [
+            TSNECallback(log_every_n_epochs=cfg.train.get('viz_interval', 5)),
+            AdjacencyCallback(log_every_n_epochs=cfg.train.get('viz_interval', 5)),
+            GradientNormCallback(),
+            WeightHistogramCallback(log_every_n_epochs=min(5, cfg.train.max_epochs)),
+        ]
         trainer = pl.Trainer(
-            callbacks=[checkpoint_callback],
+            callbacks=[checkpoint_callback] + vis_callbacks,
             max_epochs=cfg.train.max_epochs, min_epochs=cfg.train.min_epochs, 
-            accelerator='gpu', devices=cfg.train.n_gpu_use, strategy='ddp_find_unused_parameters_true',
-            limit_val_batches=limit_val_batches
+            accelerator='gpu', devices=cfg.train.n_gpu_use, strategy='auto',
+            limit_val_batches=limit_val_batches,
+            logger=logger
         )
         trainer.fit(model, dm)
 

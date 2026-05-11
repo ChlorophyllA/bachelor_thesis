@@ -1,7 +1,7 @@
 
 defaults:
   - _self_
-  - data@data_0: SEED # dataset 0 used in pretrain
+  - data@data_0: SEEDVII # dataset 0 used in pretrain
   - data@data_1: None # dataset 1 used in pretrain
   - data@data_2: None # dataset 2 used in pretrain
   - data@data_3: None # dataset 3 used in pretrain
@@ -26,18 +26,26 @@ train:
   seed: 19260832
   n_fold: 1
   n_pairs: 1024
-  n_gpu_use: 2
+  n_gpu_use: 1
   iftest: False
-  lr: 5e-4
+  lr: 1e-3
   wd: 0.0001
   loss_temp: 0.07
-  max_epochs: 3
+  max_epochs: 5
   min_epochs: 1
   num_workers: 127
   save_interval: 1
+  strategy: 'auto'
+  vq_weight: 1.0
+  viz_interval: 5      # epochs between visualization logging (t-SNE, adj, histograms)
+  augmentation:
+    enable: True
+    channel_drop: 0.0
+    noise_std: 0.005
+    scale_range: null
   loss:
     clisa_loss: True
-    temp: 0.07
+    temp: 0.2
     CDA_loss: True
     CDA_factor: 1e-2
     to_riem: False
@@ -49,7 +57,7 @@ val:
     ckpt_epoch: 20 # epoch of pretrain model ckpt used to extract feature
     reverse: True # swap val and train sub or not
     normTrain: False
-    batch_size: 64
+    batch_size: 32
     fea_mode: 'me'
     rn_decay: 0.990
     LDS: True
@@ -84,6 +92,18 @@ model:
     has_att: True
     extract_mode: '${val.extractor.fea_mode}'
     global_att: False
+    use_region_conv: True
+    n_scales: 5
+  use_vq: False
+  vq:
+    n_emb: 512
+    emb_dim: 128
+    commit: 0.25
+  use_granularity_gnn: False # multi-granularity spatial GNN (7 brain regions)
+  granularity_gnn:
+    hidden_dim: 64
+    n_layers: 3
+    dist_sigma: 0.3
   MLLA: # parameter for MLLA encoder
     patch_size: 32
     patch_stride: 6

@@ -13,7 +13,9 @@ from omegaconf import DictConfig
 import pytorch_lightning as pl
 from tqdm import tqdm
 import mne
+import matplotlib.pyplot as plt
 from src.utils import video_order_load, reorder_vids_sepVideo, reorder_vids_back
+from src.visualization import plot_class_topomaps, plot_topomap
 
 def normTrain(data,data_train):
     temp = np.transpose(data_train,(0,1,3,2))
@@ -22,14 +24,6 @@ def normTrain(data,data_train):
     data_var = np.var(temp, axis=0)
     data_normed = (data - data_mean.reshape(-1,1)) / np.sqrt(data_var + 1e-5).reshape(-1,1)
     return data_normed
-
-def cal_fea(data,mode):
-    if mode == 'de':
-        fea = 0.5*np.log(2*np.pi*np.exp(1)*(np.var(data, 3)) + 1.0).squeeze()
-        fea[fea<-40] = -40
-    elif mode == 'me':
-        fea = np.mean(data, axis=3).squeeze()
-    return fea
 
 @hydra.main(config_path="cfgs_multi", config_name="config_multi", version_base="1.3")
 def ext_fea(cfg: DictConfig) -> None:
@@ -67,7 +61,6 @@ def ext_fea(cfg: DictConfig) -> None:
         Extractor = MultiModel_PL.load_from_checkpoint(checkpoint_path=cp_path, cfg=cfg, strict=False)
         Extractor.save_fea = True
         Extractor.cnn_encoder.set_saveFea(True)
-        trainer = pl.Trainer(accelerator='gpu', devices=1)
     for fold in tqdm(range(n_folds), desc='Extracting feature......'):
         if cfg.val.extractor.normTrain:
             val_subs = val_subs_all[fold]
@@ -93,14 +86,28 @@ def ext_fea(cfg: DictConfig) -> None:
             print(data_fold.shape)
             foldset = ext_Dataset(data_fold, label_fold)
             del data_fold, label_fold
-            fold_loader = DataLoader(foldset, batch_size=cfg.val.extractor.batch_size, shuffle=False, num_workers=cfg.train.num_workers)
-            pred = trainer.predict(Extractor, fold_loader)
-            mllaout = [pred_i[2] for pred_i in pred]
-            pred = [pred_i[0] for pred_i in pred]
-            pred = torch.cat(pred, dim=0).cpu().numpy()
-            # Pred = [n_fea, dim, 1, T]
-            fea = cal_fea(pred,cfg.val.extractor.fea_mode)
-            fea = fea.reshape(cfg.data_val.n_subs,-1,fea.shape[-1])
+            fold_loader = DataLoader(foldset, batch_size=cfg.val.extractor.batch_size, shuffle=False, num_workers=0)
+            # 逐批提取特征，避免trainer.predict一次性缓存全部结果导致OOM
+            Extractor.eval()
+            all_fea = []
+            fea_mode = cfg.val.extractor.fea_mode
+            for batch in tqdm(fold_loader, desc='Extracting features'):
+                with torch.no_grad():
+                    x = batch[0].cuda()
+                    out = Extractor(x)
+                    fea_map = out[0]  # [B, dim, 1, T]
+                    if fea_mode == 'de':
+                        v = torch.var(fea_map, dim=3, keepdim=True)
+                        f = 0.5 * torch.log(2 * np.pi * torch.exp(torch.tensor(1.0).cuda()) * v + 1.0)
+                        f = torch.clamp(f.squeeze(), min=-40)
+                    elif fea_mode == 'me':
+                        f = torch.mean(fea_map, dim=3).squeeze()
+                    else:
+                        f = fea_map
+                    all_fea.append(f.cpu().numpy())
+                    del fea_map, f, out
+            fea = np.concatenate(all_fea, axis=0)
+            fea = fea.reshape(cfg.data_val.n_subs, -1, fea.shape[-1])
         else:
             n_subs, n_samples, n_chans, sfreqs = data_fold.shape
             freqs = [[1,4], [4,8], [8,14], [14,30], [30,47]]
@@ -183,6 +190,19 @@ def ext_fea(cfg: DictConfig) -> None:
             save_path = os.path.join(save_dir,cfg.log.run_name+f'_f{fold}_fea_{f'epoch={(cfg.val.extractor.ckpt_epoch-1):02d}.ckpt' if cfg.val.extractor.use_pretrain else ""}{cfg.val.extractor.fea_mode if cfg.val.extractor.use_pretrain else cfg.val.extractor.fea_mode}.npy')
         np.save(save_path,fea)
         print(f'fea saved to {save_path}')
+
+        # Visualize: per-class topomaps (if channels match feature dim)
+        n_chans = len(cfg.data_val.channels)
+        if fea.shape[-1] % n_chans == 0 and cfg.val.extractor.fea_mode in ['de', 'me']:
+            fea_ch = fea.reshape(cfg.data_val.n_subs, -1, n_chans, -1).mean(axis=(1, 3))  # [n_subs, n_chans]
+            labels_rep = np.tile(onesub_label, 1)[:fea_ch.shape[0] * cfg.data_val.n_subs]
+            # Use first subject's labels per fold
+            fig = plot_class_topomaps(fea_ch, onesub_label, cfg.data_val.channels,
+                                      title_prefix=f'{cfg.log.run_name}_f{fold}')
+            topo_path = save_path.replace('.npy', '_topomap.png')
+            fig.savefig(topo_path, dpi=150)
+            plt.close(fig)
+            print(f'topomap saved to {topo_path}')
         if not cfg.val.extractor.normTrain:
             break
 

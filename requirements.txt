@@ -2,7 +2,10 @@
 hydra-core
 transformers==4.45.2
 timm==1.0.9
-torch==2.3.1
+--extra-index-url https://download.pytorch.org/whl/nightly/cu124
+torch
+torchvision
+torchaudio
 pytorch_lightning==2.4.0
 tqdm==4.66.5
 scipy
