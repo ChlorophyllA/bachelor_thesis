@@ -2,7 +2,7 @@
 defaults:
   - _self_
   - data@data_0: SEEDVII # dataset 0 used in pretrain
-  - data@data_1: None # dataset 1 used in pretrain
+  - data@data_1: SEEDIV # dataset 1 used in pretrain
   - data@data_2: None # dataset 2 used in pretrain
   - data@data_3: None # dataset 3 used in pretrain
   - data@data_4: None # dataset 4 used in pretrain
@@ -99,7 +99,7 @@ model:
     n_emb: 512
     emb_dim: 128
     commit: 0.25
-  use_granularity_gnn: False # multi-granularity spatial GNN (7 brain regions)
+  use_granularity_gnn: True # multi-granularity spatial GNN (7 brain regions)
   granularity_gnn:
     hidden_dim: 64
     n_layers: 3
