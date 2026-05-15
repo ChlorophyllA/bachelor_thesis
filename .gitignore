@@ -8,6 +8,7 @@ doc/
 mlp_cp
 *.pyc
 *.png
+!thesis/figures/*.png
 *.log
 lightning_logs/
 clisa_run/
